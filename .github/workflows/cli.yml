@@ -1,0 +1,162 @@
+name: CI
+on:
+  workflow_dispatch:
+  release:
+    types: [ created ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: --deny warnings
+
+permissions:
+  contents: write
+
+jobs:
+  tests:
+    name: Tests CI
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y g++ libx11-dev libxkbcommon-x11-0 libasound2-dev libudev-dev pkg-config xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+      - name: Check rustc version
+        run: rustc --version && cargo --version
+      - name: Test executor verbose
+        run: cargo test --verbose -p executor --all-features
+
+  wasm_build:
+    name: Wasm build and upload CI
+    needs: [format, tests]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check rustc version
+        run: rustc --version && cargo --version
+      - name: Build wasm package
+        run: |
+          cargo install wasm-pack
+          cd executor-wasm; wasm-pack build --release --target=web
+      - name: Prepare wasm package
+        run: |
+          mv data executor-wasm/
+          cd executor-wasm; tar --exclude='*.toml' --exclude='src' -zcvf Wasm.tar.gz * 
+          cd ../; mv executor-wasm/Wasm.tar.gz Wasm.tar.gz
+      - name: Generate SHA-256
+        run: shasum -a 256 Wasm.tar.gz | cut -d ' ' -f 1 > Wasm.tar.gz.sha256
+      - name: Release wasm package
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            Wasm.tar.gz
+            Wasm.tar.gz.sha256
+
+  format:
+    name: Rust fmt and clippy CI
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [ stable ]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check fmt version
+        run: cargo fmt --version
+      - name: Check fmt code
+        run: cargo fmt -- --check
+      - name: Install linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev pkg-config xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+      - name: Check version of clippy
+        run: cargo clippy --version
+      - name: Check clippy code
+        run: cargo clippy -p executor --all-targets --all-features -- --deny warnings
+
+  os_build:
+    name: Os build and upload CI
+    needs: [format, tests]
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os_name: Linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: mine64-linux-amd64
+          - os_name: Windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: mine64-amd64.exe
+          - os_name: macOS-x86_64
+            os: macOS-latest
+            target: x86_64-apple-darwin
+            bin: mine64-darwin-amd64
+          - os_name: macOS-aarch64
+            os: macOS-latest
+            target: aarch64-apple-darwin
+            bin: mine64-darwin-arm64
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install linux deps
+        if: matrix.platform.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y g++ libx11-dev libxkbcommon-x11-0 libasound2-dev libudev-dev pkg-config xorg-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+      - name: Build package
+        uses: houseabsolute/actions-rust-cross@v0
+        with:
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: stable
+          args: "-p executor --locked --release --verbose --all-targets --all-features"
+          strip: true
+      - name: Prepare package (linux and macos)
+        if: matrix.platform.os_name != 'Windows-x86_64'
+        run: |
+          mv target/${{ matrix.platform.target }}/release/executor target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
+          mv data target/${{ matrix.platform.target }}/release/
+          cd target/${{ matrix.platform.target }}/release; tar -zcvf ${{ matrix.platform.os_name }}.tar.gz ${{ matrix.platform.bin }} data
+          cd ../../../; mv target/${{ matrix.platform.target }}/release/${{ matrix.platform.os_name }}.tar.gz ${{ matrix.platform.os_name }}.tar.gz
+      - name: Prepare package (windows)
+        if: matrix.platform.os_name == 'Windows-x86_64'
+        run: |
+          mv target/${{ matrix.platform.target }}/release/executor.exe target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
+          mv data target/${{ matrix.platform.target }}/release/
+          cd target/${{ matrix.platform.target }}/release; tar -zcvf ${{ matrix.platform.os_name }}.tar.gz ${{ matrix.platform.bin }} data
+          cd ../../../; mv target/${{ matrix.platform.target }}/release/${{ matrix.platform.os_name }}.tar.gz ${{ matrix.platform.os_name }}.tar.gz
+      - name: Generate SHA-256
+        run: shasum -a 256 ${{ matrix.platform.os_name }}.tar.gz | cut -d ' ' -f 1 > ${{ matrix.platform.os_name }}.tar.gz.sha256
+      - name: Release package
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ matrix.platform.os_name }}.tar.gz
+            ${{ matrix.platform.os_name }}.tar.gz.sha256
