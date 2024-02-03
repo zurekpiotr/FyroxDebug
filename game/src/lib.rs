@@ -41,18 +41,18 @@ use fyrox::{
     scene::{node::Node, Scene},
 };
 
-use chunk::SectorBuilder;
+// use chunk::SectorBuilder;
 
-use crate::world::World;
+// use crate::world::World;
 
-mod block;
+// mod block;
 
-mod chunk;
+// mod chunk;
 
-mod algorithm;
+// mod algorithm;
 mod direction;
-mod world;
-mod world_generator;
+// mod world;
+// mod world_generator;
 
 pub struct GameConstructor;
 
